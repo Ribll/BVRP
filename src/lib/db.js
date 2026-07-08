@@ -75,6 +75,25 @@ export async function deleteGroup(id) {
   if (error) throw error;
 }
 
+// Aggiorna i campi di PROFILO di un utente (nome, email-profilo, gruppo, ruolo).
+// NB: l'email di LOGIN vive in auth.users e NON viene toccata qui: cambiarla per
+// un altro utente richiede la service role (Edge Function). Vedi README/CONTEXT.
+export async function updateProfile(id, fields) {
+  const patch = {};
+  if (fields.name !== undefined) patch.name = fields.name;
+  if (fields.email !== undefined) patch.email = fields.email;
+  if (fields.group !== undefined) patch.group_id = fields.group || null;
+  if (fields.role !== undefined) patch.role = fields.role;
+  const { data, error } = await supabase
+    .from("profiles")
+    .update(patch)
+    .eq("id", id)
+    .select()
+    .single();
+  if (error) throw error;
+  return rowToUser(data);
+}
+
 // Elimina il profilo. NB: l'utente di autenticazione resta in auth.users
 // (la sua rimozione richiede la service role → farla dalla dashboard o
 // con una Edge Function). Vedi README.
