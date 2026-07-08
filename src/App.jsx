@@ -1317,6 +1317,7 @@ export default function App(){
             const yFerie=annualFerie(u.id);
             const mPerm=countFor(u.id,"permesso");
             const mTrasf=countFor(u.id,"trasferta");
+            const mSW=countFor(u.id,"smartworking");
             return(
               <Card key={u.id} style={{padding:"14px 16px"}}>
                 <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:12}}>
@@ -1344,6 +1345,11 @@ export default function App(){
                     borderRadius:9,padding:"8px 10px",textAlign:"center"}}>
                     <div style={{fontSize:20,fontWeight:700,color:"#a78bfa",lineHeight:1}}>{mTrasf}</div>
                     <div style={{fontSize:10,color:"#5a4a80",marginTop:3}}>Trasferte</div>
+                  </div>
+                  <div style={{gridColumn:"1 / -1",background:"rgba(96,165,250,.07)",
+                    border:"1px solid rgba(96,165,250,.2)",borderRadius:9,padding:"8px 10px",textAlign:"center"}}>
+                    <div style={{fontSize:20,fontWeight:700,color:"#60a5fa",lineHeight:1}}>{mSW}</div>
+                    <div style={{fontSize:10,color:"#4a6080",marginTop:3}}>Smart Working (mese)</div>
                   </div>
                 </div>
               </Card>
@@ -1386,12 +1392,18 @@ export default function App(){
                     whiteSpace:"nowrap",minWidth:90}}>
                     Ferie mese
                   </th>
+                  <th style={{padding:"12px 10px",textAlign:"center",fontSize:11,fontWeight:600,
+                    color:"#4a5068",textTransform:"uppercase",letterSpacing:"0.8px",
+                    whiteSpace:"nowrap",minWidth:90}}>
+                    SW mese
+                  </th>
                 </tr>
               </thead>
               <tbody>
                 {filteredUsers.map((user)=>{
                   const isMe=user.id===me.id;
                   const mFerie=totalFerie(user.id);
+                  const mSW=countFor(user.id,"smartworking");
                   return(
                     <tr key={user.id} className="row-hover"
                       style={{borderBottom:"1px solid #13161e",background:isMe?"rgba(37,99,235,.02)":"transparent"}}>
@@ -1450,6 +1462,17 @@ export default function App(){
                             background:"rgba(251,191,36,.1)",border:"1px solid rgba(251,191,36,.25)",
                             color:"#fbbf24",fontSize:12,fontWeight:700,padding:"3px 10px",borderRadius:20}}>
                             ☀ {mFerie}g
+                          </span>
+                        ):(
+                          <span style={{fontSize:12,color:"#2a2f45"}}>—</span>
+                        )}
+                      </td>
+                      <td style={{padding:"8px 10px",textAlign:"center"}}>
+                        {mSW>0?(
+                          <span style={{display:"inline-flex",alignItems:"center",gap:5,
+                            background:"rgba(96,165,250,.1)",border:"1px solid rgba(96,165,250,.25)",
+                            color:"#60a5fa",fontSize:12,fontWeight:700,padding:"3px 10px",borderRadius:20}}>
+                            💻 {mSW}g
                           </span>
                         ):(
                           <span style={{fontSize:12,color:"#2a2f45"}}>—</span>
