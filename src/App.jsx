@@ -549,11 +549,17 @@ export default function App(){
                             // bg for the cell column
                             const colBg=isToday(day)?"rgba(37,99,235,.04)":nonWork?"rgba(255,255,255,.012)":"transparent";
                             const borderL=weekend&&day.getDay()===6?"1px solid #1e2235":"none";
+                            const cellTitle=(()=>{
+                              const p=[];
+                              if(hasCustom&&s.status!=="assente"){p.push(info.label);if(s.location)p.push(s.location);}
+                              if(holiday)p.push(holiday);
+                              return p.length?p.join(" · "):undefined;
+                            })();
                             return(
                               <td key={day} style={{padding:"4px 3px",textAlign:"center",
                                 background:colBg,borderLeft:borderL}}>
                                 <div onClick={()=>canEdit&&setModal({uid:user.id,date:day,cur:s})}
-                                  title={holiday?`${holiday}${s.status!=="assente"?" · "+info.label:""}`:undefined}
+                                  title={cellTitle}
                                   style={{display:"inline-flex",flexDirection:"column",alignItems:"center",
                                     gap:2,padding:"5px 5px",borderRadius:8,minWidth:60,
                                     background:hasCustom&&s.status!=="assente"?info.bg:nonWork&&!hasCustom?"rgba(255,255,255,.02)":"transparent",
@@ -571,8 +577,8 @@ export default function App(){
                                       :nonWork?"—":"Uff."}
                                   </span>
                                   {holiday&&!hasCustom&&<span style={{fontSize:8,color:"#f472b6",lineHeight:1}}>🎉</span>}
-                                  {hasCustom&&s.location&&<span style={{fontSize:8,color:info.color,opacity:.7,
-                                    maxWidth:54,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{s.location}</span>}
+                                  {hasCustom&&s.location&&<span style={{fontSize:9,color:info.color,opacity:.75,
+                                    maxWidth:58,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{s.location}</span>}
                                 </div>
                               </td>
                             );
@@ -981,6 +987,9 @@ export default function App(){
           {step==="location"&&(
             <div>
               <div style={{fontSize:13,color:"#9ca3af",marginBottom:11}}>Inserisci la destinazione della trasferta:</div>
+              <div style={{fontSize:11,color:"#4a5068",marginTop:-6,marginBottom:11,lineHeight:1.5}}>
+                Meglio un nome breve (città o cliente): nel calendario lo spazio è ridotto e il testo completo compare al passaggio del mouse.
+              </div>
               <input autoFocus value={loc} onChange={e=>setLoc(e.target.value)}
                 placeholder="Es. Roma, Monaco, Parigi…"
                 onKeyDown={e=>e.key==="Enter"&&confirmLocation()}
