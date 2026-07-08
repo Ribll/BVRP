@@ -9,6 +9,7 @@ import {
   createGroup,
   deleteGroup,
   deleteProfile,
+  updateProfile,
   adminCreateUser,
 } from "./lib/db";
 
@@ -682,6 +683,23 @@ export default function App(){
   const AdminView=()=>{
     const [nu,setNu]=useState({name:"",email:"",password:"1234",group:groups[0]?.id||"",role:"user"});
     const [ng,setNg]=useState({name:"",managerEmail:""});
+    const [editId,setEditId]=useState(null);
+    const [eu,setEu]=useState({name:"",email:"",group:"",role:"user"});
+
+    const startEdit=(u)=>{ setEditId(u.id); setEu({name:u.name,email:u.email,group:u.group||"",role:u.role}); };
+    const cancelEdit=()=>{ setEditId(null); };
+    const saveEdit=async(id)=>{
+      if(!eu.name.trim()||!eu.email.trim()) return;
+      try{
+        const updated=await updateProfile(id,{name:eu.name.trim(),email:eu.email.trim(),group:eu.group,role:eu.role});
+        setUsers(p=>p.map(x=>x.id===id?{...x,...updated}:x));
+        setEditId(null);
+        showToast("Utente aggiornato","success");
+      }catch(err){
+        console.error(err);
+        showToast("Errore nell'aggiornamento utente","error");
+      }
+    };
     const inp={width:"100%",background:"#1a1d2b",border:"1px solid #2a2f45",borderRadius:9,
       padding:"10px 12px",color:"#e8eaf0",fontSize:13,outline:"none",transition:"border-color .2s"};
     const lbl={display:"block",fontSize:10,fontWeight:600,color:"#4a5068",
@@ -809,30 +827,58 @@ export default function App(){
             const g=groups.find(x=>x.id===u.group);
             const s=getSt(u.id,new Date());
             return(
-              <div key={u.id} style={{display:"flex",alignItems:"center",justifyContent:"space-between",
-                padding:"11px 18px",borderBottom:i<users.length-1?"1px solid #13161e":"none",gap:12,flexWrap:"wrap"}}>
-                <div style={{display:"flex",alignItems:"center",gap:10}}>
-                  <Avt initials={u.avatar} color={u.color} size={32}/>
-                  <div>
-                    <div style={{fontSize:13,fontWeight:500,color:"#d1d5db",display:"flex",alignItems:"center",gap:6}}>
-                      {u.name}
-                      {u.role==="admin"&&<span style={{fontSize:10,background:"rgba(37,99,235,.15)",
-                        color:"#60a5fa",padding:"1px 6px",borderRadius:8}}>admin</span>}
-                    </div>
-                    <div style={{fontSize:11,color:"#4a5068"}}>{u.email} · {g?.name||"—"}</div>
+              <div key={u.id} style={{padding:"11px 18px",borderBottom:i<users.length-1?"1px solid #13161e":"none"}}>
+                {editId===u.id ? (
+                  <div style={{display:"flex",alignItems:"center",gap:8,flexWrap:"wrap"}}>
+                    <input style={{...inp,flex:"1 1 130px"}} placeholder="Nome" value={eu.name}
+                      onChange={e=>setEu(p=>({...p,name:e.target.value}))}/>
+                    <input style={{...inp,flex:"1 1 160px"}} placeholder="Email profilo" value={eu.email}
+                      onChange={e=>setEu(p=>({...p,email:e.target.value}))}/>
+                    <select style={{...inp,cursor:"pointer",flex:"1 1 120px"}} value={eu.group}
+                      onChange={e=>setEu(p=>({...p,group:e.target.value}))}>
+                      <option value="">— nessun gruppo —</option>
+                      {groups.map(gr=><option key={gr.id} value={gr.id}>{gr.name}</option>)}
+                    </select>
+                    <select style={{...inp,cursor:"pointer",flex:"0 1 110px"}} value={eu.role}
+                      onChange={e=>setEu(p=>({...p,role:e.target.value}))}>
+                      <option value="user">user</option>
+                      <option value="admin">admin</option>
+                    </select>
+                    <button onClick={()=>saveEdit(u.id)} style={{padding:"8px 12px",background:"rgba(37,99,235,.15)",
+                      border:"1px solid rgba(37,99,235,.3)",borderRadius:7,color:"#60a5fa",fontSize:12,
+                      fontWeight:600,cursor:"pointer"}}>Salva</button>
+                    <button onClick={cancelEdit} style={{padding:"8px 12px",background:"transparent",
+                      border:"1px solid #2a2f45",borderRadius:7,color:"#6b7280",fontSize:12,cursor:"pointer"}}>Annulla</button>
                   </div>
-                </div>
-                <div style={{display:"flex",alignItems:"center",gap:10}}>
-                  <Pill status={s.status} location={s.location}/>
-                  {u.id!==me.id&&(
-                    <button onClick={async()=>{
-                        try{ await deleteProfile(u.id); setUsers(p=>p.filter(x=>x.id!==u.id)); }
-                        catch(e){ console.error(e); showToast("Errore eliminazione utente","error"); }
-                      }}
-                      style={{padding:"5px 9px",background:"transparent",border:"1px solid #2a2f45",
-                        borderRadius:7,color:"#6b7280",fontSize:12,cursor:"pointer"}}>✕</button>
-                  )}
-                </div>
+                ) : (
+                  <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",gap:12,flexWrap:"wrap"}}>
+                    <div style={{display:"flex",alignItems:"center",gap:10}}>
+                      <Avt initials={u.avatar} color={u.color} size={32}/>
+                      <div>
+                        <div style={{fontSize:13,fontWeight:500,color:"#d1d5db",display:"flex",alignItems:"center",gap:6}}>
+                          {u.name}
+                          {u.role==="admin"&&<span style={{fontSize:10,background:"rgba(37,99,235,.15)",
+                            color:"#60a5fa",padding:"1px 6px",borderRadius:8}}>admin</span>}
+                        </div>
+                        <div style={{fontSize:11,color:"#4a5068"}}>{u.email} · {g?.name||"—"}</div>
+                      </div>
+                    </div>
+                    <div style={{display:"flex",alignItems:"center",gap:8}}>
+                      <Pill status={s.status} location={s.location}/>
+                      <button onClick={()=>startEdit(u)} title="Modifica"
+                        style={{padding:"5px 9px",background:"transparent",border:"1px solid #2a2f45",
+                          borderRadius:7,color:"#6b7280",fontSize:12,cursor:"pointer"}}>✎</button>
+                      {u.id!==me.id&&(
+                        <button onClick={async()=>{
+                            try{ await deleteProfile(u.id); setUsers(p=>p.filter(x=>x.id!==u.id)); }
+                            catch(e){ console.error(e); showToast("Errore eliminazione utente","error"); }
+                          }}
+                          style={{padding:"5px 9px",background:"transparent",border:"1px solid #2a2f45",
+                            borderRadius:7,color:"#6b7280",fontSize:12,cursor:"pointer"}}>✕</button>
+                      )}
+                    </div>
+                  </div>
+                )}
               </div>
             );
           })}
