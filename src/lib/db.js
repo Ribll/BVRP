@@ -1,4 +1,3 @@
-import { createClient } from "@supabase/supabase-js";
 import { supabase } from "./supabase";
 
 /* ------------------------------------------------------------------ *
@@ -21,6 +20,31 @@ const rowToGroup = (r) => ({
   name: r.name,
   managerEmail: r.manager_email,
 });
+
+/* --------------------- Edge Function: manage-users ---------------- *
+ *  Le operazioni privilegiate (creare/eliminare account, cambiare    *
+ *  l'email di login) girano nella Edge Function "manage-users", che   *
+ *  usa la service role. Il browser NON tocca mai la service role.     *
+ *  functions.invoke allega automaticamente il token dell'admin        *
+ *  loggato: la funzione verifica lato server che sia davvero admin.   *
+ * ------------------------------------------------------------------ */
+async function callAdminFn(body) {
+  const { data, error } = await supabase.functions.invoke("manage-users", { body });
+  if (error) {
+    // Con un errore HTTP, supabase-js mette il messaggio nel corpo della
+    // risposta (error.context), non in error.message: proviamo a leggerlo.
+    let msg = error.message;
+    try {
+      const j = await error.context.json();
+      if (j?.error) msg = j.error;
+    } catch {
+      /* corpo non-JSON: teniamo error.message */
+    }
+    throw new Error(msg);
+  }
+  if (data?.error) throw new Error(data.error);
+  return data;
+}
 
 /* ------------------------------- READ ----------------------------- */
 
@@ -75,37 +99,52 @@ export async function deleteGroup(id) {
   if (error) throw error;
 }
 
-// Aggiorna i campi di PROFILO di un utente (nome, email-profilo, gruppo, ruolo).
-// NB: l'email di LOGIN vive in auth.users e NON viene toccata qui: cambiarla per
-// un altro utente richiede la service role (Edge Function). Vedi README/CONTEXT.
+// Aggiorna i campi di un utente. Nome/gruppo/ruolo sono aggiornabili
+// direttamente (l'RLS admin lo consente). Se cambia l'EMAIL, quella è
+// l'email di LOGIN: passa dalla Edge Function, che aggiorna auth.users e
+// sincronizza profiles.email. Chi chiama (saveEdit) include il campo
+// "email" nei fields solo quando è effettivamente cambiata.
 export async function updateProfile(id, fields) {
+  // 1) Cambio email di login (se richiesto) → Edge Function.
+  if (fields.email !== undefined) {
+    await callAdminFn({ action: "update", id, email: fields.email });
+  }
+
+  // 2) Campi di solo profilo → update diretto.
   const patch = {};
   if (fields.name !== undefined) patch.name = fields.name;
-  if (fields.email !== undefined) patch.email = fields.email;
   if (fields.group !== undefined) patch.group_id = fields.group || null;
   if (fields.role !== undefined) patch.role = fields.role;
-  const { data, error } = await supabase
-    .from("profiles")
-    .update(patch)
-    .eq("id", id)
-    .select()
-    .single();
-  if (error) throw error;
-  return rowToUser(data);
+
+  let row;
+  if (Object.keys(patch).length > 0) {
+    const { data, error } = await supabase
+      .from("profiles")
+      .update(patch)
+      .eq("id", id)
+      .select()
+      .single();
+    if (error) throw error;
+    row = data;
+  } else {
+    // Solo email cambiata: rileggo la riga per restituire lo stato aggiornato.
+    const { data, error } = await supabase.from("profiles").select("*").eq("id", id).single();
+    if (error) throw error;
+    row = data;
+  }
+  return rowToUser(row);
 }
 
-// Elimina il profilo. NB: l'utente di autenticazione resta in auth.users
-// (la sua rimozione richiede la service role → farla dalla dashboard o
-// con una Edge Function). Vedi README.
+// Elimina DAVVERO l'utente: la Edge Function rimuove l'account in
+// auth.users; profilo e presenze spariscono in cascata (ON DELETE CASCADE).
 export async function deleteProfile(id) {
-  const { error } = await supabase.from("profiles").delete().eq("id", id);
-  if (error) throw error;
+  await callAdminFn({ action: "delete", id });
 }
 
 /* ---------------------- AUTH: creazione utente -------------------- *
- *  Usiamo un client "usa e getta" (persistSession:false) così la      *
- *  registrazione del nuovo utente NON sovrascrive la sessione admin   *
- *  aperta nel browser.                                                *
+ *  Passa dalla Edge Function (admin.createUser con email_confirm:true):*
+ *  l'account nasce già confermato e senza inviare alcuna email. Il     *
+ *  trigger handle_new_user() crea la riga profiles dai metadati.       *
  * ------------------------------------------------------------------ */
 export async function adminCreateUser({ name, email, password, group, role }) {
   const initials = name
@@ -118,22 +157,20 @@ export async function adminCreateUser({ name, email, password, group, role }) {
   const cols = ["#60a5fa", "#34d399", "#a78bfa", "#fbbf24", "#f472b6", "#fb923c"];
   const color = cols[Math.floor(Math.random() * cols.length)];
 
-  const tmp = createClient(
-    import.meta.env.VITE_SUPABASE_URL,
-    import.meta.env.VITE_SUPABASE_ANON_KEY,
-    { auth: { persistSession: false, autoRefreshToken: false } }
-  );
-
-  const { data, error } = await tmp.auth.signUp({
+  const data = await callAdminFn({
+    action: "create",
     email: email.trim(),
     password,
-    options: { data: { name: name.trim(), group_id: group, role, avatar: initials, color } },
+    name: name.trim(),
+    group_id: group,
+    role,
+    avatar: initials,
+    color,
   });
-  if (error) throw error;
 
-  // Ritorna la forma "user" per aggiornare subito lo stato locale
+  // Ritorna la forma "user" per aggiornare subito lo stato locale.
   return {
-    id: data.user?.id,
+    id: data.id,
     name: name.trim(),
     email: email.trim(),
     group,
