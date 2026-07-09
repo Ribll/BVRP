@@ -257,6 +257,33 @@ export default function App(){
 
   const me = session ? users.find(u=>u.id===session.id) : null;
   const isAdmin = me?.role==="admin";
+
+  /* ---------- GERARCHIA GRUPPI ----------
+   * descendantGroupIds(gid): i gruppi SOTTO gid (figli, nipoti, ...), a
+   * qualsiasi profondità. Non include gid stesso: così i colleghi di pari
+   * livello non acquisiscono poteri l'uno sull'altro.
+   * canEditUser(uid): può modificare le presenze di uid chi è quell'utente,
+   * chi è admin, o chi sta in un gruppo gerarchicamente superiore al suo.
+   * (L'RLS su Supabase applica le stesse regole lato server.) */
+  const descendantGroupIds=(gid)=>{
+    if(!gid) return [];
+    const out=[]; const stack=[gid];
+    while(stack.length){
+      const cur=stack.pop();
+      for(const g of groups){
+        if(g.parent===cur && !out.includes(g.id)){ out.push(g.id); stack.push(g.id); }
+      }
+    }
+    return out;
+  };
+  const myDescGroups = descendantGroupIds(me?.group);
+  const canEditUser=(uid)=>{
+    if(uid===me?.id) return true;
+    if(isAdmin) return true;
+    const t=users.find(u=>u.id===uid);
+    return !!t && !!t.group && myDescGroups.includes(t.group);
+  };
+
   const weekDays = getWeekDays(weekDate);
   const holidays = getItalianHolidays(weekDate.getFullYear());
 
@@ -545,7 +572,7 @@ export default function App(){
                             const s=getSt(user.id,day);
                             const hasCustom=!!pres[fmtKey(user.id,day)];
                             const info=STATUS[s.status]||STATUS.assente;
-                            const canEdit=isMe||isAdmin;
+                            const canEdit=canEditUser(user.id);
                             // bg for the cell column
                             const colBg=isToday(day)?"rgba(37,99,235,.04)":nonWork?"rgba(255,255,255,.012)":"transparent";
                             const borderL=weekend&&day.getDay()===6?"1px solid #1e2235":"none";
@@ -615,8 +642,53 @@ export default function App(){
   /* TEAM VIEW */
   const TeamView=()=>{
     const myGroup=groups.find(g=>g.id===me.group);
-    const gUsers=users.filter(u=>u.group===me.group);
     const today=new Date();
+    // Il mio gruppo + tutti i gruppi a me sottoposti, ciascuno in una sezione.
+    const subGroups=myDescGroups.map(id=>groups.find(g=>g.id===id)).filter(Boolean);
+    const sections=[...(myGroup?[myGroup]:[]),...subGroups];
+
+    const userCard=(user)=>{
+      const s=getSt(user.id,today);
+      const info=STATUS[s.status]||STATUS.assente;
+      const isMe=user.id===me.id;
+      const editable=canEditUser(user.id);
+      return(
+        <Card key={user.id} style={{padding:"18px",border:isMe?"1px solid rgba(37,99,235,.3)":"1px solid #1e2235"}}>
+          <div style={{display:"flex",alignItems:"center",gap:10,marginBottom:14}}>
+            <Avt initials={user.avatar} color={user.color} size={40} ring={isMe}/>
+            <div style={{flex:1,minWidth:0}}>
+              <div style={{fontSize:14,fontWeight:600,color:"#e8eaf0",display:"flex",alignItems:"center",gap:6}}>
+                {user.name}
+                {isMe&&<span style={{fontSize:10,background:"rgba(37,99,235,.2)",color:"#60a5fa",
+                  padding:"1px 7px",borderRadius:10}}>tu</span>}
+              </div>
+              <div style={{fontSize:11,color:"#4a5068",marginTop:1,
+                whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}>{user.email}</div>
+            </div>
+          </div>
+          <div style={{display:"flex",alignItems:"center",gap:7,padding:"9px 11px",
+            background:s.status!=="assente"?info.bg:"#141824",borderRadius:9,
+            border:`1px solid ${s.status!=="assente"?info.color+"33":"#1e2235"}`}}>
+            <span style={{width:6,height:6,borderRadius:"50%",background:info.dot,flexShrink:0}}/>
+            <span style={{fontSize:13,fontWeight:500,color:s.status!=="assente"?info.color:"#3a3f55"}}>
+              {info.label}
+            </span>
+            {s.location&&<span style={{fontSize:11,color:info.color,opacity:.7}}>· {s.location}</span>}
+          </div>
+          {editable&&(
+            <button onClick={()=>setModal({uid:user.id,date:today,cur:s})}
+              style={{marginTop:10,width:"100%",padding:"7px",background:"transparent",
+                border:"1px solid #2a2f45",borderRadius:8,color:"#6b7280",fontSize:12,
+                cursor:"pointer",transition:"all .15s"}}
+              onMouseEnter={e=>{e.currentTarget.style.borderColor="#60a5fa";e.currentTarget.style.color="#60a5fa";}}
+              onMouseLeave={e=>{e.currentTarget.style.borderColor="#2a2f45";e.currentTarget.style.color="#6b7280";}}>
+              {isMe?"Modifica stato oggi":"Modifica stato"}
+            </button>
+          )}
+        </Card>
+      );
+    };
+
     return(
       <div className="fade-up" style={{padding:"22px 26px"}}>
         <Card style={{padding:"16px 20px",marginBottom:20,display:"flex",
@@ -626,6 +698,11 @@ export default function App(){
               {myGroup?.name||"Gruppo"}
             </div>
             <div style={{fontSize:13,color:"#6b7280"}}>Responsabile: <span style={{color:"#9ca3af"}}>{myGroup?.managerEmail||"—"}</span></div>
+            {subGroups.length>0&&(
+              <div style={{fontSize:11,color:"#4a5068",marginTop:4}}>
+                {subGroups.length} {subGroups.length===1?"gruppo sottoposto":"gruppi sottoposti"}
+              </div>
+            )}
           </div>
           <button onClick={()=>sendAlert(myGroup)}
             style={{display:"flex",alignItems:"center",gap:8,padding:"9px 16px",
@@ -639,48 +716,35 @@ export default function App(){
             Segnala al responsabile
           </button>
         </Card>
-        <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(240px,1fr))",gap:14}}>
-          {gUsers.map(user=>{
-            const s=getSt(user.id,today);
-            const info=STATUS[s.status]||STATUS.assente;
-            const isMe=user.id===me.id;
-            return(
-              <Card key={user.id} style={{padding:"18px",border:isMe?"1px solid rgba(37,99,235,.3)":"1px solid #1e2235"}}>
-                <div style={{display:"flex",alignItems:"center",gap:10,marginBottom:14}}>
-                  <Avt initials={user.avatar} color={user.color} size={40} ring={isMe}/>
-                  <div style={{flex:1,minWidth:0}}>
-                    <div style={{fontSize:14,fontWeight:600,color:"#e8eaf0",display:"flex",alignItems:"center",gap:6}}>
-                      {user.name}
-                      {isMe&&<span style={{fontSize:10,background:"rgba(37,99,235,.2)",color:"#60a5fa",
-                        padding:"1px 7px",borderRadius:10}}>tu</span>}
-                    </div>
-                    <div style={{fontSize:11,color:"#4a5068",marginTop:1,
-                      whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}>{user.email}</div>
-                  </div>
+
+        {sections.length===0&&(
+          <Card style={{padding:"24px",textAlign:"center",color:"#4a5068",fontSize:13}}>
+            Non sei assegnato a nessun gruppo.
+          </Card>
+        )}
+
+        {sections.map((g,idx)=>{
+          const gUsers=users.filter(u=>u.group===g.id);
+          const isOwn=g.id===me.group;
+          return(
+            <div key={g.id} style={{marginBottom:idx<sections.length-1?22:0}}>
+              <div style={{display:"flex",alignItems:"center",gap:9,margin:"0 2px 11px"}}>
+                <span style={{fontSize:12,fontWeight:600,color:"#9ca3af"}}>{g.name}</span>
+                {!isOwn&&<span style={{fontSize:10,background:"rgba(167,139,250,.12)",color:"#a78bfa",
+                  padding:"2px 8px",borderRadius:10}}>sottoposto</span>}
+                <span style={{fontSize:11,color:"#4a5068"}}>· {gUsers.length} {gUsers.length===1?"persona":"persone"}</span>
+                <div style={{flex:1,height:1,background:"#1a1d2b"}}/>
+              </div>
+              {gUsers.length===0?(
+                <Card style={{padding:"16px",color:"#3a3f55",fontSize:12}}>Nessun membro.</Card>
+              ):(
+                <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(240px,1fr))",gap:14}}>
+                  {gUsers.map(u=>userCard(u))}
                 </div>
-                <div style={{display:"flex",alignItems:"center",gap:7,padding:"9px 11px",
-                  background:s.status!=="assente"?info.bg:"#141824",borderRadius:9,
-                  border:`1px solid ${s.status!=="assente"?info.color+"33":"#1e2235"}`}}>
-                  <span style={{width:6,height:6,borderRadius:"50%",background:info.dot,flexShrink:0}}/>
-                  <span style={{fontSize:13,fontWeight:500,color:s.status!=="assente"?info.color:"#3a3f55"}}>
-                    {info.label}
-                  </span>
-                  {s.location&&<span style={{fontSize:11,color:info.color,opacity:.7}}>· {s.location}</span>}
-                </div>
-                {isMe&&(
-                  <button onClick={()=>setModal({uid:me.id,date:today,cur:s})}
-                    style={{marginTop:10,width:"100%",padding:"7px",background:"transparent",
-                      border:"1px solid #2a2f45",borderRadius:8,color:"#6b7280",fontSize:12,
-                      cursor:"pointer",transition:"all .15s"}}
-                    onMouseEnter={e=>{e.currentTarget.style.borderColor="#60a5fa";e.currentTarget.style.color="#60a5fa";}}
-                    onMouseLeave={e=>{e.currentTarget.style.borderColor="#2a2f45";e.currentTarget.style.color="#6b7280";}}>
-                    Modifica stato oggi
-                  </button>
-                )}
-              </Card>
-            );
-          })}
-        </div>
+              )}
+            </div>
+          );
+        })}
       </div>
     );
   };
@@ -688,7 +752,7 @@ export default function App(){
   /* ADMIN VIEW */
   const AdminView=()=>{
     const [nu,setNu]=useState({name:"",email:"",password:"1234",group:groups[0]?.id||"",role:"user"});
-    const [ng,setNg]=useState({name:"",managerEmail:""});
+    const [ng,setNg]=useState({name:"",managerEmail:"",parent:""});
     const [editId,setEditId]=useState(null);
     const [eu,setEu]=useState({name:"",email:"",group:"",role:"user"});
 
@@ -733,13 +797,13 @@ export default function App(){
     const addGroup=async()=>{
       if(!ng.name.trim()||!ng.managerEmail.trim()) return;
       try{
-        const created=await createGroup({name:ng.name.trim(),managerEmail:ng.managerEmail.trim()});
+        const created=await createGroup({name:ng.name.trim(),managerEmail:ng.managerEmail.trim(),parent:ng.parent||null});
         setGroups(p=>[...p,created]);
-        setNg({name:"",managerEmail:""});
+        setNg({name:"",managerEmail:"",parent:""});
         showToast("Gruppo creato","success");
       }catch(e){
         console.error(e);
-        showToast("Errore nella creazione gruppo","error");
+        showToast(e.message||"Errore nella creazione gruppo","error");
       }
     };
     return(
@@ -755,6 +819,15 @@ export default function App(){
               <div><label style={lbl}>Email responsabile</label>
                 <input style={inp} placeholder="manager@azienda.it" value={ng.managerEmail} onChange={e=>setNg(p=>({...p,managerEmail:e.target.value}))}
                   onFocus={e=>e.target.style.borderColor="#60a5fa"} onBlur={e=>e.target.style.borderColor="#2a2f45"}/>
+              </div>
+              <div><label style={lbl}>Gruppo padre</label>
+                <select style={{...inp,cursor:"pointer"}} value={ng.parent} onChange={e=>setNg(p=>({...p,parent:e.target.value}))}>
+                  <option value="">— nessuno (primo livello) —</option>
+                  {groups.map(g=><option key={g.id} value={g.id}>{g.name}</option>)}
+                </select>
+                <div style={{fontSize:10,color:"#4a5068",marginTop:4}}>
+                  I membri del gruppo padre potranno vedere e modificare le presenze di questo gruppo.
+                </div>
               </div>
               <button onClick={addGroup} style={{padding:"10px",background:"rgba(37,99,235,.15)",
                 border:"1px solid rgba(37,99,235,.3)",borderRadius:9,color:"#60a5fa",fontSize:13,fontWeight:500,cursor:"pointer"}}>
@@ -809,7 +882,10 @@ export default function App(){
                 padding:"12px 18px",borderBottom:i<groups.length-1?"1px solid #13161e":"none",flexWrap:"wrap",gap:10}}>
                 <div>
                   <div style={{fontSize:13,fontWeight:500,color:"#d1d5db"}}>{g.name}</div>
-                  <div style={{fontSize:11,color:"#4a5068"}}>{g.managerEmail} · {users.filter(u=>u.group===g.id).length} membri</div>
+                  <div style={{fontSize:11,color:"#4a5068"}}>
+                    {g.managerEmail} · {users.filter(u=>u.group===g.id).length} membri
+                    {g.parent&&<> · sotto <span style={{color:"#a78bfa"}}>{groups.find(x=>x.id===g.parent)?.name||"—"}</span></>}
+                  </div>
                 </div>
                 <div style={{display:"flex",gap:7,alignItems:"center"}}>
                   {crit.length>0&&<span style={{padding:"3px 10px",background:"rgba(251,191,36,.08)",
@@ -1445,11 +1521,11 @@ export default function App(){
                             background:colBg,borderLeft:weekend&&day.getDay()===6?"1px solid #1e2235":"none"}}>
                             {hasCustom&&s.status!=="assente"?(
                               <div title={`${info.label}${s.location?" · "+s.location:""}`}
-                                onClick={()=>(isMe||isAdmin)&&setModal({uid:user.id,date:day,cur:s})}
+                                onClick={()=>canEditUser(user.id)&&setModal({uid:user.id,date:day,cur:s})}
                                 style={{width:26,height:26,borderRadius:6,background:info.bg,
                                   border:`1px solid ${info.color}44`,display:"inline-flex",
                                   alignItems:"center",justifyContent:"center",
-                                  cursor:(isMe||isAdmin)?"pointer":"default"}}>
+                                  cursor:canEditUser(user.id)?"pointer":"default"}}>
                                 <span style={{width:6,height:6,borderRadius:"50%",background:info.dot}}/>
                               </div>
                             ):nonWork?(
@@ -1462,10 +1538,10 @@ export default function App(){
                               </div>
                             ):(
                               <div title="Presente (default)"
-                                onClick={()=>(isMe||isAdmin)&&setModal({uid:user.id,date:day,cur:s})}
+                                onClick={()=>canEditUser(user.id)&&setModal({uid:user.id,date:day,cur:s})}
                                 style={{width:26,height:26,display:"inline-flex",borderRadius:6,
                                   alignItems:"center",justifyContent:"center",
-                                  cursor:(isMe||isAdmin)?"pointer":"default"}}>
+                                  cursor:canEditUser(user.id)?"pointer":"default"}}>
                                 <span style={{width:4,height:4,borderRadius:"50%",background:"#34d39944"}}/>
                               </div>
                             )}
