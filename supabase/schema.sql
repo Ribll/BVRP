@@ -18,6 +18,7 @@ create table if not exists public.groups (
   name          text not null,
   manager_email text not null,
   parent_id     uuid references public.groups(id) on delete set null,
+  require_office boolean not null default false,  -- richiede almeno una presenza in sede
   created_at    timestamptz default now()
 );
 
@@ -25,6 +26,9 @@ create table if not exists public.groups (
 alter table public.groups
   add column if not exists parent_id uuid
   references public.groups(id) on delete set null;
+
+alter table public.groups
+  add column if not exists require_office boolean not null default false;
 
 create index if not exists groups_parent_id_idx on public.groups (parent_id);
 
@@ -176,6 +180,94 @@ $$;
 
 grant execute on function public.group_descendants(uuid) to authenticated;
 grant execute on function public.manages_user(uuid)      to authenticated;
+
+-- ============================================================
+--  PRESIDIO MINIMO IN UFFICIO
+--  Un gruppo con require_office=true deve avere sempre almeno una
+--  persona con status 'presente' nei giorni feriali. È un TRIGGER e
+--  non una policy: l'RLS valuta una riga per volta e non sa contare.
+-- ============================================================
+
+-- 2) Il guardiano. È un TRIGGER, non una policy RLS: l'RLS valuta una
+--    riga alla volta e non può contare quante persone del gruppo sono
+--    in ufficio quel giorno.
+create or replace function public.check_office_presence()
+returns trigger
+language plpgsql
+security definer set search_path = public
+as $$
+declare
+  g_id             uuid;
+  g_name           text;
+  req              boolean;
+  member_count     int;
+  others_in_office int;
+begin
+  -- Tornare in ufficio è sempre permesso.
+  if new.status = 'presente' then
+    return new;
+  end if;
+
+  -- Sabato (6) e domenica (7): nessun presidio richiesto.
+  if extract(isodow from new.date) >= 6 then
+    return new;
+  end if;
+
+  -- Gruppo dell'utente interessato.
+  select p.group_id into g_id from public.profiles p where p.id = new.user_id;
+  if g_id is null then
+    return new;
+  end if;
+
+  select g.require_office, g.name into req, g_name
+  from public.groups g where g.id = g_id;
+  if not coalesce(req, false) then
+    return new;
+  end if;
+
+  -- Soglia: gruppi piccoli esentati, altrimenti nessuno potrebbe assentarsi.
+  select count(*) into member_count from public.profiles where group_id = g_id;
+  if member_count < 3 then
+    return new;
+  end if;
+
+  -- Scavalco: admin globale, oppure superiore gerarchico dell'utente.
+  -- NB: manages_user(sé stesso) è falso, quindi un manager che modifica
+  -- il PROPRIO stato resta soggetto al vincolo.
+  if public.is_admin() or public.manages_user(new.user_id) then
+    return new;
+  end if;
+
+  -- Quanti ALTRI membri del gruppo risultano in ufficio quel giorno?
+  -- coalesce(...,'presente'): chi non ha riga è in ufficio per default.
+  select count(*) into others_in_office
+  from public.profiles p
+  where p.group_id = g_id
+    and p.id <> new.user_id
+    and coalesce(
+          (select a.status from public.attendance a
+            where a.user_id = p.id and a.date = new.date),
+          'presente'
+        ) = 'presente';
+
+  if others_in_office = 0 then
+    raise exception
+      'Sei l''ultima persona in ufficio per il gruppo "%": è richiesta almeno una presenza in sede.', g_name
+      using errcode = 'check_violation';
+  end if;
+
+  return new;
+end;
+$$;
+
+drop trigger if exists attendance_office_guard on public.attendance;
+create trigger attendance_office_guard
+  before insert or update on public.attendance
+  for each row execute function public.check_office_presence();
+
+-- NB: non serve un trigger su DELETE: cancellare una riga riporta la
+-- persona al default 'presente' e non può svuotare l'ufficio.
+-- NB: le festività sono calcolate lato client, il DB non le conosce.
 
 -- ============================================================
 --  ROW LEVEL SECURITY
