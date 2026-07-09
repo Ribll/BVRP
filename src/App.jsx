@@ -8,6 +8,7 @@ import {
   upsertAttendance,
   createGroup,
   deleteGroup,
+  updateGroup,
   deleteProfile,
   updateProfile,
   adminCreateUser,
@@ -289,13 +290,48 @@ export default function App(){
 
   const isNonWorking=(date)=>isWeekend(date)||holidays.has(fmtDate(date));
   const getSt=(uid,date)=>pres[fmtKey(uid,date)]||(isNonWorking(date)?{status:"assente"}:{status:"presente"});
+
+  /* ---------- PRESIDIO MINIMO IN UFFICIO ----------
+   * Un gruppo può richiedere che resti sempre almeno una persona in sede.
+   * Qui è solo interfaccia (messaggio gentile prima di provarci): la regola
+   * vera è il trigger `attendance_office_guard` sul database.
+   * Le due logiche devono restare allineate. */
+  const OFFICE_MIN_MEMBERS=3;
+  const officeBlocker=(uid,date,newStatus)=>{
+    if(newStatus==="presente") return null;      // tornare in ufficio è sempre ok
+    if(isNonWorking(date)) return null;          // weekend e festività
+    const target=users.find(u=>u.id===uid);
+    if(!target||!target.group) return null;
+    const g=groups.find(x=>x.id===target.group);
+    if(!g||!g.requireOffice) return null;
+    const members=users.filter(u=>u.group===g.id);
+    if(members.length<OFFICE_MIN_MEMBERS) return null;   // gruppi piccoli esentati
+    if(isAdmin) return null;                              // admin scavalca
+    if(uid!==me?.id&&canEditUser(uid)) return null;       // superiore gerarchico scavalca
+    const others=members.filter(u=>u.id!==uid&&getSt(u.id,date).status==="presente");
+    return others.length===0 ? g.name : null;
+  };
+
   const setSt=(uid,date,status,location="")=>{
+    const blockedBy=officeBlocker(uid,date,status);
+    if(blockedBy){
+      showToast(`Ultima persona in ufficio per "${blockedBy}": deve restare almeno una presenza in sede.`,"error");
+      return false;
+    }
     const key=fmtKey(uid,date);
+    const prev=pres[key];                                       // per il rollback
     setPres(p=>({...p,[key]:{status,location}}));               // aggiornamento ottimistico
     const dateStr=(date instanceof Date?date.toISOString():date).split("T")[0];
     upsertAttendance(uid,dateStr,status,location).catch(e=>{
-      console.error(e); showToast("Errore nel salvataggio","error");
+      console.error(e);
+      setPres(p=>{                                              // il DB ha rifiutato: ripristino
+        const n={...p};
+        if(prev===undefined) delete n[key]; else n[key]=prev;
+        return n;
+      });
+      showToast(e.message||"Errore nel salvataggio","error");
     });
+    return true;
   };
 
   const isOut=s=>["ferie","trasferta","permesso"].includes(s);
@@ -752,7 +788,7 @@ export default function App(){
   /* ADMIN VIEW */
   const AdminView=()=>{
     const [nu,setNu]=useState({name:"",email:"",password:"1234",group:groups[0]?.id||"",role:"user"});
-    const [ng,setNg]=useState({name:"",managerEmail:"",parent:""});
+    const [ng,setNg]=useState({name:"",managerEmail:"",parent:"",requireOffice:false});
     const [editId,setEditId]=useState(null);
     const [eu,setEu]=useState({name:"",email:"",group:"",role:"user"});
 
@@ -797,13 +833,24 @@ export default function App(){
     const addGroup=async()=>{
       if(!ng.name.trim()||!ng.managerEmail.trim()) return;
       try{
-        const created=await createGroup({name:ng.name.trim(),managerEmail:ng.managerEmail.trim(),parent:ng.parent||null});
+        const created=await createGroup({name:ng.name.trim(),managerEmail:ng.managerEmail.trim(),
+          parent:ng.parent||null,requireOffice:ng.requireOffice});
         setGroups(p=>[...p,created]);
-        setNg({name:"",managerEmail:"",parent:""});
+        setNg({name:"",managerEmail:"",parent:"",requireOffice:false});
         showToast("Gruppo creato","success");
       }catch(e){
         console.error(e);
         showToast(e.message||"Errore nella creazione gruppo","error");
+      }
+    };
+    const toggleOffice=async(g)=>{
+      try{
+        const updated=await updateGroup(g.id,{requireOffice:!g.requireOffice});
+        setGroups(p=>p.map(x=>x.id===g.id?updated:x));
+        showToast(updated.requireOffice?"Presidio in ufficio attivato":"Presidio in ufficio disattivato","success");
+      }catch(e){
+        console.error(e);
+        showToast(e.message||"Errore nell'aggiornamento gruppo","error");
       }
     };
     return(
@@ -829,6 +876,16 @@ export default function App(){
                   I membri del gruppo padre potranno vedere e modificare le presenze di questo gruppo.
                 </div>
               </div>
+              <label style={{display:"flex",alignItems:"flex-start",gap:9,cursor:"pointer"}}>
+                <input type="checkbox" checked={ng.requireOffice} style={{marginTop:2,cursor:"pointer"}}
+                  onChange={e=>setNg(p=>({...p,requireOffice:e.target.checked}))}/>
+                <span>
+                  <span style={{fontSize:12,color:"#d1d5db"}}>Richiedi almeno una presenza in ufficio</span>
+                  <span style={{display:"block",fontSize:10,color:"#4a5068",marginTop:2}}>
+                    Blocca chi resterebbe l'ultimo in sede. Attivo solo da {OFFICE_MIN_MEMBERS} membri in su.
+                  </span>
+                </span>
+              </label>
               <button onClick={addGroup} style={{padding:"10px",background:"rgba(37,99,235,.15)",
                 border:"1px solid rgba(37,99,235,.3)",borderRadius:9,color:"#60a5fa",fontSize:13,fontWeight:500,cursor:"pointer"}}>
                 + Crea gruppo
@@ -881,7 +938,19 @@ export default function App(){
               <div key={g.id} style={{display:"flex",alignItems:"center",justifyContent:"space-between",
                 padding:"12px 18px",borderBottom:i<groups.length-1?"1px solid #13161e":"none",flexWrap:"wrap",gap:10}}>
                 <div>
-                  <div style={{fontSize:13,fontWeight:500,color:"#d1d5db"}}>{g.name}</div>
+                  <div style={{fontSize:13,fontWeight:500,color:"#d1d5db",display:"flex",alignItems:"center",gap:7,flexWrap:"wrap"}}>
+                    {g.name}
+                    {g.requireOffice&&(
+                      users.filter(u=>u.group===g.id).length<OFFICE_MIN_MEMBERS?(
+                        <span title={`Servono almeno ${OFFICE_MIN_MEMBERS} membri perché il vincolo abbia effetto`}
+                          style={{fontSize:10,background:"rgba(251,191,36,.1)",color:"#fbbf24",
+                            padding:"1px 7px",borderRadius:8}}>presidio inattivo</span>
+                      ):(
+                        <span style={{fontSize:10,background:"rgba(52,211,153,.12)",color:"#34d399",
+                          padding:"1px 7px",borderRadius:8}}>presidio ufficio</span>
+                      )
+                    )}
+                  </div>
                   <div style={{fontSize:11,color:"#4a5068"}}>
                     {g.managerEmail} · {users.filter(u=>u.group===g.id).length} membri
                     {g.parent&&<> · sotto <span style={{color:"#a78bfa"}}>{groups.find(x=>x.id===g.parent)?.name||"—"}</span></>}
@@ -890,6 +959,13 @@ export default function App(){
                 <div style={{display:"flex",gap:7,alignItems:"center"}}>
                   {crit.length>0&&<span style={{padding:"3px 10px",background:"rgba(251,191,36,.08)",
                     border:"1px solid #fbbf2433",borderRadius:20,color:"#fbbf24",fontSize:11}}>⚠ {crit.length} critici</span>}
+                  <button onClick={()=>toggleOffice(g)}
+                    title={g.requireOffice?"Disattiva il presidio in ufficio":"Richiedi almeno una presenza in ufficio"}
+                    style={{padding:"6px 12px",background:g.requireOffice?"rgba(52,211,153,.1)":"transparent",
+                      border:`1px solid ${g.requireOffice?"#34d39944":"#2a2f45"}`,borderRadius:8,
+                      color:g.requireOffice?"#34d399":"#6b7280",fontSize:12,cursor:"pointer"}}>
+                    🏢 Presidio {g.requireOffice?"ON":"OFF"}
+                  </button>
                   <button onClick={()=>sendAlert(g)} style={{padding:"6px 12px",background:"transparent",
                     border:"1px solid #2a2f45",borderRadius:8,color:"#6b7280",fontSize:12,cursor:"pointer"}}>
                     ✉ Segnala
@@ -1000,14 +1076,13 @@ export default function App(){
     const pick=(k)=>{
       if(k==="trasferta"){setPending(k);setStep("location");}
       else if(k==="permesso"){setPending(k);setTimeErr("");setStep("timerange");}
-      else{setSt(modal.uid,modal.date,k);setModal(null);}
+      else{ if(setSt(modal.uid,modal.date,k)) setModal(null); }
     };
-    const confirmLocation=()=>{setSt(modal.uid,modal.date,pending,loc);setModal(null);};
+    const confirmLocation=()=>{ if(setSt(modal.uid,modal.date,pending,loc)) setModal(null); };
     const confirmTime=()=>{
       if(!timeFrom||!timeTo){setTimeErr("Inserisci entrambi gli orari");return;}
       if(timeFrom>=timeTo){setTimeErr("L'orario di fine deve essere successivo all'inizio");return;}
-      setSt(modal.uid,modal.date,"permesso",`${timeFrom} – ${timeTo}`);
-      setModal(null);
+      if(setSt(modal.uid,modal.date,"permesso",`${timeFrom} – ${timeTo}`)) setModal(null);
     };
 
     const s_perm=STATUS.permesso;
@@ -1058,7 +1133,7 @@ export default function App(){
                 );
               })}
               {modal.cur?.status!=="assente"&&(
-                <button onClick={()=>{setSt(modal.uid,modal.date,"presente");setModal(null);}}
+                <button onClick={()=>{ if(setSt(modal.uid,modal.date,"presente")) setModal(null); }}
                   style={{marginTop:4,padding:"9px",background:"transparent",border:"1px solid #2a2f45",
                     borderRadius:10,color:"#4a5068",fontSize:13,cursor:"pointer"}}>
                   Ripristina a "In ufficio"
