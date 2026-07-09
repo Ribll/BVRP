@@ -19,6 +19,7 @@ const rowToGroup = (r) => ({
   id: r.id,
   name: r.name,
   managerEmail: r.manager_email,
+  parent: r.parent_id || null,
 });
 
 /* --------------------- Edge Function: manage-users ---------------- *
@@ -84,10 +85,10 @@ export async function upsertAttendance(userId, dateStr, status, location = "") {
   if (error) throw error;
 }
 
-export async function createGroup({ name, managerEmail }) {
+export async function createGroup({ name, managerEmail, parent = null }) {
   const { data, error } = await supabase
     .from("groups")
-    .insert({ name, manager_email: managerEmail })
+    .insert({ name, manager_email: managerEmail, parent_id: parent || null })
     .select()
     .single();
   if (error) throw error;
