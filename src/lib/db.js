@@ -20,6 +20,7 @@ const rowToGroup = (r) => ({
   name: r.name,
   managerEmail: r.manager_email,
   parent: r.parent_id || null,
+  requireOffice: !!r.require_office,
 });
 
 /* --------------------- Edge Function: manage-users ---------------- *
@@ -85,10 +86,34 @@ export async function upsertAttendance(userId, dateStr, status, location = "") {
   if (error) throw error;
 }
 
-export async function createGroup({ name, managerEmail, parent = null }) {
+export async function createGroup({ name, managerEmail, parent = null, requireOffice = false }) {
   const { data, error } = await supabase
     .from("groups")
-    .insert({ name, manager_email: managerEmail, parent_id: parent || null })
+    .insert({
+      name,
+      manager_email: managerEmail,
+      parent_id: parent || null,
+      require_office: !!requireOffice,
+    })
+    .select()
+    .single();
+  if (error) throw error;
+  return rowToGroup(data);
+}
+
+// Aggiorna un gruppo esistente (solo admin, per RLS).
+// Campi ammessi: name, managerEmail, parent, requireOffice.
+export async function updateGroup(id, fields) {
+  const patch = {};
+  if (fields.name !== undefined) patch.name = fields.name;
+  if (fields.managerEmail !== undefined) patch.manager_email = fields.managerEmail;
+  if (fields.parent !== undefined) patch.parent_id = fields.parent || null;
+  if (fields.requireOffice !== undefined) patch.require_office = !!fields.requireOffice;
+
+  const { data, error } = await supabase
+    .from("groups")
+    .update(patch)
+    .eq("id", id)
     .select()
     .single();
   if (error) throw error;
